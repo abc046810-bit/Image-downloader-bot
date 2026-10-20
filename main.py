@@ -4,6 +4,7 @@ import requests
 from flask import Flask, request
 from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+import asyncio
 
 # ---------------- CONFIG ----------------
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
@@ -44,22 +45,22 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
-        response = requests.get(text, headers=headers, timeout=15, stream=True)
+        response = requests.get(text, headers=headers, timeout=20, stream=True)
         response.raise_for_status()
 
         content_type = response.headers.get("Content-Type", "").lower()
-        if not any(x in content_type for x in ["image/", "jpeg", "png", "webp", "gif"]):
-            # still try if extension looks like image
-            if not any(text.lower().endswith(ext) for ext in [".jpg", ".jpeg", ".png", ".webp", ".gif"]):
-                await update.message.reply_text("This doesn't look like a direct image link.")
-                return
+        is_image = any(x in content_type for x in ["image/", "jpeg", "png", "webp", "gif"])
+        has_image_ext = any(text.lower().endswith(ext) for ext in [".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"])
 
-        # Send as photo
+        if not (is_image or has_image_ext):
+            await update.message.reply_text("This doesn't look like a direct image link.")
+            return
+
         await update.message.reply_photo(
             photo=response.content,
-            caption="Here's your image"
+            caption="Here's your image ✅"
         )
 
     except requests.exceptions.Timeout:
@@ -76,24 +77,25 @@ application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("help", help_command))
 application.add_handler(MessageHandler(filters.TEXT & \~filters.COMMAND, handle_url))
 
-# ---------------- FLASK WEBHOOK ----------------
+# ---------------- FLASK ROUTES ----------------
 @app.route("/")
 def home():
-    return "Image Downloader Bot is running!"
+    return "Image Downloader Bot is running! ✅"
 
 @app.route("/webhook", methods=["POST"])
-async def webhook():
-    if request.method == "POST":
-        update = Update.de_json(request.get_json(force=True), bot)
-        await application.process_update(update)
+def webhook():
+    update = Update.de_json(request.get_json(force=True), bot)
+    # Run the async process_update in the event loop
+    asyncio.get_event_loop().run_until_complete(application.process_update(update))
     return "ok"
 
-# ---------------- START ----------------
+# ---------------- STARTUP ----------------
 if __name__ == "__main__":
-    # Set webhook when starting
     if WEBHOOK_URL:
-        bot.set_webhook(url=f"{WEBHOOK_URL}/webhook")
-        print(f"Webhook set to: {WEBHOOK_URL}/webhook")
+        try:
+            bot.set_webhook(url=f"{WEBHOOK_URL.rstrip('/')}/webhook")
+            print(f"Webhook set to: {WEBHOOK_URL.rstrip('/')}/webhook")
+        except Exception as e:
+            print(f"Webhook set failed: {e}")
     
-    # Run Flask with gunicorn in production
     app.run(host="0.0.0.0", port=PORT)
