@@ -3,7 +3,7 @@ import logging
 import requests
 import asyncio
 from flask import Flask, request
-from telegram import Update, Bot
+from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # ---------------- CONFIG ----------------
@@ -91,9 +91,12 @@ def webhook():
         data = request.get_json(force=True)
         update = Update.de_json(data, application.bot)
 
+        async def process():
+            await application.process_update(update)
+
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        loop.run_until_complete(application.process_update(update))
+        loop.run_until_complete(process())
         loop.close()
 
         return "ok"
@@ -101,26 +104,25 @@ def webhook():
         logger.error(f"Webhook error: {e}")
         return "error", 500
 
-# ---------------- SET WEBHOOK PROPERLY ----------------
-async def setup_webhook():
-    if not WEBHOOK_URL:
+# ---------------- INITIALIZE + SET WEBHOOK ----------------
+async def main_setup():
+    # Initialize the application (very important)
+    await application.initialize()
+    await application.start()
+
+    if WEBHOOK_URL:
+        url = f"{WEBHOOK_URL.rstrip('/')}/webhook"
+        try:
+            await application.bot.delete_webhook(drop_pending_updates=True)
+            await application.bot.set_webhook(url=url)
+            print(f"✅ Webhook successfully set to: {url}")
+        except Exception as e:
+            print(f"❌ Failed to set webhook: {e}")
+    else:
         print("❌ WEBHOOK_URL missing")
-        return
 
-    url = f"{WEBHOOK_URL.rstrip('/')}/webhook"
-    
-    try:
-        # First delete old webhook
-        await application.bot.delete_webhook(drop_pending_updates=True)
-        
-        # Set new webhook
-        await application.bot.set_webhook(url=url)
-        print(f"✅ Webhook successfully set to: {url}")
-    except Exception as e:
-        print(f"❌ Failed to set webhook: {e}")
-
-# Run the async setup
-asyncio.run(setup_webhook())
+# Run setup
+asyncio.run(main_setup())
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=PORT)
