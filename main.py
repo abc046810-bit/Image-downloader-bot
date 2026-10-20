@@ -1,15 +1,15 @@
 import os
 import logging
 import requests
+import asyncio
 from flask import Flask, request
 from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-import asyncio
 
 # ---------------- CONFIG ----------------
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 PORT = int(os.environ.get("PORT", 10000))
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL")  # https://your-app.onrender.com
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -35,7 +35,14 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return
+
     text = update.message.text.strip()
+
+    # Ignore commands
+    if text.startswith("/"):
+        return
 
     if not text.startswith(("http://", "https://")):
         await update.message.reply_text("Please send a valid image URL starting with http or https")
@@ -47,7 +54,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
-        response = requests.get(text, headers=headers, timeout=20, stream=True)
+        response = requests.get(text, headers=headers, timeout=20)
         response.raise_for_status()
 
         content_type = response.headers.get("Content-Type", "").lower()
@@ -75,7 +82,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Register handlers
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("help", help_command))
-application.add_handler(MessageHandler(filters.TEXT & \~filters.COMMAND, handle_url))
+application.add_handler(MessageHandler(filters.TEXT, handle_url))   # ← yahan \~ nahi hai
 
 # ---------------- FLASK ROUTES ----------------
 @app.route("/")
@@ -85,7 +92,6 @@ def home():
 @app.route("/webhook", methods=["POST"])
 def webhook():
     update = Update.de_json(request.get_json(force=True), bot)
-    # Run the async process_update in the event loop
     asyncio.get_event_loop().run_until_complete(application.process_update(update))
     return "ok"
 
