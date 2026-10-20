@@ -7,7 +7,7 @@ from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # ---------------- CONFIG ----------------
-TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
+TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 PORT = int(os.environ.get("PORT", 10000))
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "").strip()
 
@@ -18,7 +18,7 @@ print(f"WEBHOOK_URL: {WEBHOOK_URL}")
 print("=" * 50)
 
 if not TOKEN:
-    raise ValueError("TELEGRAM_TOKEN environment variable is missing or empty!")
+    raise ValueError("BOT_TOKEN environment variable is missing or empty!")
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -27,21 +27,19 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-bot = Bot(token=TOKEN)
+
+# Create application
 application = Application.builder().token(TOKEN).build()
 
 # ---------------- HANDLERS ----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Send me any image URL and I will download & send it back.\n\n"
-        "Example:\nhttps://image.tmdb.org/t/p/w342/1nej9lnFyZTlqlaP6XHUEPtVYyX.jpg"
+        "Bot is working! ✅\n\n"
+        "Ab koi bhi image link bhejo, main download karke bhej dunga."
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Just paste any direct image link (jpg, png, webp, etc.)\n"
-        "I will download and send the image."
-    )
+    await update.message.reply_text("Koi bhi direct image URL bhejo (jpg/png/webp)")
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
@@ -53,63 +51,72 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not text.startswith(("http://", "https://")):
-        await update.message.reply_text("Please send a valid image URL starting with http or https")
+        await update.message.reply_text("Valid image URL bhejo (http/https se start hona chahiye)")
         return
 
     await update.message.reply_chat_action("upload_photo")
 
     try:
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         }
-        response = requests.get(text, headers=headers, timeout=20)
-        response.raise_for_status()
+        r = requests.get(text, headers=headers, timeout=20)
+        r.raise_for_status()
 
-        content_type = response.headers.get("Content-Type", "").lower()
+        content_type = r.headers.get("Content-Type", "").lower()
         is_image = any(x in content_type for x in ["image/", "jpeg", "png", "webp", "gif"])
-        has_image_ext = any(text.lower().endswith(ext) for ext in [".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"])
+        has_ext = any(text.lower().endswith(ext) for ext in [".jpg", ".jpeg", ".png", ".webp", ".gif"])
 
-        if not (is_image or has_image_ext):
-            await update.message.reply_text("This doesn't look like a direct image link.")
+        if not (is_image or has_ext):
+            await update.message.reply_text("Yeh direct image link nahi lag raha.")
             return
 
-        await update.message.reply_photo(
-            photo=response.content,
-            caption="Here's your image ✅"
-        )
+        await update.message.reply_photo(photo=r.content, caption="Here's your image ✅")
 
-    except requests.exceptions.Timeout:
-        await update.message.reply_text("Download timed out. Try again.")
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Download error: {e}")
-        await update.message.reply_text("Failed to download the image. Link may be private or invalid.")
     except Exception as e:
-        logger.error(f"Unexpected error: {e}")
-        await update.message.reply_text("Something went wrong. Please try another link.")
+        logger.error(f"Error: {e}")
+        await update.message.reply_text("Download fail ho gaya. Link check karo.")
 
 # Register handlers
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("help", help_command))
 application.add_handler(MessageHandler(filters.TEXT, handle_url))
 
-# ---------------- FLASK ROUTES ----------------
+# ---------------- FLASK ----------------
 @app.route("/")
 def home():
-    return "Image Downloader Bot is running! ✅"
+    return "Image Downloader Bot is LIVE ✅"
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    update = Update.de_json(request.get_json(force=True), bot)
-    asyncio.get_event_loop().run_until_complete(application.process_update(update))
-    return "ok"
+    try:
+        data = request.get_json(force=True)
+        update = Update.de_json(data, application.bot)
+        
+        # Proper way to process update
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(application.process_update(update))
+        loop.close()
+        
+        return "ok"
+    except Exception as e:
+        logger.error(f"Webhook error: {e}")
+        return "error", 500
 
-# ---------------- STARTUP ----------------
-if __name__ == "__main__":
+# ---------------- STARTUP (set webhook) ----------------
+def set_webhook():
     if WEBHOOK_URL:
         try:
-            bot.set_webhook(url=f"{WEBHOOK_URL.rstrip('/')}/webhook")
-            print(f"Webhook set to: {WEBHOOK_URL.rstrip('/')}/webhook")
+            bot = Bot(token=TOKEN)
+            url = f"{WEBHOOK_URL.rstrip('/')}/webhook"
+            bot.set_webhook(url=url)
+            print(f"✅ Webhook successfully set to: {url}")
         except Exception as e:
-            print(f"Webhook set failed: {e}")
-    
+            print(f"❌ Failed to set webhook: {e}")
+
+# Set webhook when app starts
+set_webhook()
+
+if __name__ == "__main__":
     app.run(host="0.0.0.0", port=PORT)
