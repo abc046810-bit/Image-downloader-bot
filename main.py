@@ -7,9 +7,18 @@ from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # ---------------- CONFIG ----------------
-TOKEN = os.environ.get("TELEGRAM_TOKEN")
+TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
 PORT = int(os.environ.get("PORT", 10000))
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "").strip()
+
+print("=" * 50)
+print(f"TOKEN present: {bool(TOKEN)}")
+print(f"TOKEN length: {len(TOKEN) if TOKEN else 0}")
+print(f"WEBHOOK_URL: {WEBHOOK_URL}")
+print("=" * 50)
+
+if not TOKEN:
+    raise ValueError("TELEGRAM_TOKEN environment variable is missing or empty!")
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -40,7 +49,6 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = update.message.text.strip()
 
-    # Ignore commands
     if text.startswith("/"):
         return
 
@@ -82,7 +90,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Register handlers
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("help", help_command))
-application.add_handler(MessageHandler(filters.TEXT, handle_url))   # ← yahan \~ nahi hai
+application.add_handler(MessageHandler(filters.TEXT, handle_url))
 
 # ---------------- FLASK ROUTES ----------------
 @app.route("/")
