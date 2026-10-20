@@ -1,24 +1,14 @@
 import os
 import logging
 import requests
-import asyncio
-from flask import Flask, request
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # ---------------- CONFIG ----------------
 TOKEN = os.environ.get("BOT_TOKEN", "").strip()
-PORT = int(os.environ.get("PORT", 10000))
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "").strip()
-
-print("=" * 50)
-print(f"TOKEN present: {bool(TOKEN)}")
-print(f"TOKEN length: {len(TOKEN) if TOKEN else 0}")
-print(f"WEBHOOK_URL: {WEBHOOK_URL}")
-print("=" * 50)
 
 if not TOKEN:
-    raise ValueError("BOT_TOKEN is missing!")
+    raise ValueError("BOT_TOKEN environment variable is missing!")
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -26,14 +16,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-app = Flask(__name__)
-application = Application.builder().token(TOKEN).build()
+print("=" * 50)
+print(f"TOKEN present: True")
+print(f"TOKEN length: {len(TOKEN)}")
+print("Starting bot in POLLING mode...")
+print("=" * 50)
 
 # ---------------- HANDLERS ----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "✅ Bot is working!\n\n"
-        "Ab koi bhi image link bhejo, main download karke bhej dunga."
+        "Ab koi bhi image link bhejo, main download karke bhej dunga.\n\n"
+        "Example:\nhttps://image.tmdb.org/t/p/w342/1nej9lnFyZTlqlaP6XHUEPtVYyX.jpg"
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -52,77 +46,46 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Valid image URL bhejo (http ya https se start hona chahiye)")
         return
 
+    # Send "uploading" action
     await update.message.reply_chat_action("upload_photo")
 
     try:
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
-        r = requests.get(text, headers=headers, timeout=20)
-        r.raise_for_status()
+        response = requests.get(text, headers=headers, timeout=25)
+        response.raise_for_status()
 
-        content_type = r.headers.get("Content-Type", "").lower()
+        content_type = response.headers.get("Content-Type", "").lower()
         is_image = any(x in content_type for x in ["image/", "jpeg", "png", "webp", "gif"])
-        has_ext = any(text.lower().endswith(ext) for ext in [".jpg", ".jpeg", ".png", ".webp", ".gif"])
+        has_ext = any(text.lower().endswith(ext) for ext in [".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"])
 
         if not (is_image or has_ext):
             await update.message.reply_text("Yeh direct image link nahi lag raha.")
             return
 
-        await update.message.reply_photo(photo=r.content, caption="Here's your image ✅")
+        # Send the image
+        await update.message.reply_photo(
+            photo=response.content,
+            caption="Here's your image ✅"
+        )
 
+    except requests.exceptions.Timeout:
+        await update.message.reply_text("Download timeout ho gaya. Thodi der baad try karo.")
     except Exception as e:
-        logger.error(f"Download error: {e}")
-        await update.message.reply_text("Download fail ho gaya. Link check karo.")
+        logger.error(f"Error: {e}")
+        await update.message.reply_text("Download fail ho gaya. Link check karo ya dusra link try karo.")
 
-# Register handlers
-application.add_handler(CommandHandler("start", start))
-application.add_handler(CommandHandler("help", help_command))
-application.add_handler(MessageHandler(filters.TEXT, handle_url))
+# ---------------- MAIN ----------------
+def main():
+    application = Application.builder().token(TOKEN).build()
 
-# ---------------- FLASK ROUTES ----------------
-@app.route("/")
-def home():
-    return "Image Downloader Bot is LIVE ✅"
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(MessageHandler(filters.TEXT & \~filters.COMMAND, handle_url))
 
-@app.route("/webhook", methods=["POST"])
-def webhook():
-    try:
-        data = request.get_json(force=True)
-        update = Update.de_json(data, application.bot)
-
-        async def process():
-            await application.process_update(update)
-
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(process())
-        loop.close()
-
-        return "ok"
-    except Exception as e:
-        logger.error(f"Webhook error: {e}")
-        return "error", 500
-
-# ---------------- INITIALIZE + SET WEBHOOK ----------------
-async def main_setup():
-    # Initialize the application (very important)
-    await application.initialize()
-    await application.start()
-
-    if WEBHOOK_URL:
-        url = f"{WEBHOOK_URL.rstrip('/')}/webhook"
-        try:
-            await application.bot.delete_webhook(drop_pending_updates=True)
-            await application.bot.set_webhook(url=url)
-            print(f"✅ Webhook successfully set to: {url}")
-        except Exception as e:
-            print(f"❌ Failed to set webhook: {e}")
-    else:
-        print("❌ WEBHOOK_URL missing")
-
-# Run setup
-asyncio.run(main_setup())
+    print("Bot is starting polling...")
+    application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=PORT)
+    main()
