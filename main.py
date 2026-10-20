@@ -18,7 +18,7 @@ print(f"WEBHOOK_URL: {WEBHOOK_URL}")
 print("=" * 50)
 
 if not TOKEN:
-    raise ValueError("BOT_TOKEN environment variable is missing or empty!")
+    raise ValueError("BOT_TOKEN is missing!")
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -27,19 +27,17 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-
-# Create application
 application = Application.builder().token(TOKEN).build()
 
 # ---------------- HANDLERS ----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Bot is working! ✅\n\n"
+        "✅ Bot is working!\n\n"
         "Ab koi bhi image link bhejo, main download karke bhej dunga."
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Koi bhi direct image URL bhejo (jpg/png/webp)")
+    await update.message.reply_text("Koi bhi direct image URL bhejo (jpg / png / webp)")
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
@@ -51,7 +49,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not text.startswith(("http://", "https://")):
-        await update.message.reply_text("Valid image URL bhejo (http/https se start hona chahiye)")
+        await update.message.reply_text("Valid image URL bhejo (http ya https se start hona chahiye)")
         return
 
     await update.message.reply_chat_action("upload_photo")
@@ -74,7 +72,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_photo(photo=r.content, caption="Here's your image ✅")
 
     except Exception as e:
-        logger.error(f"Error: {e}")
+        logger.error(f"Download error: {e}")
         await update.message.reply_text("Download fail ho gaya. Link check karo.")
 
 # Register handlers
@@ -82,7 +80,7 @@ application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("help", help_command))
 application.add_handler(MessageHandler(filters.TEXT, handle_url))
 
-# ---------------- FLASK ----------------
+# ---------------- FLASK ROUTES ----------------
 @app.route("/")
 def home():
     return "Image Downloader Bot is LIVE ✅"
@@ -92,31 +90,37 @@ def webhook():
     try:
         data = request.get_json(force=True)
         update = Update.de_json(data, application.bot)
-        
-        # Proper way to process update
+
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         loop.run_until_complete(application.process_update(update))
         loop.close()
-        
+
         return "ok"
     except Exception as e:
         logger.error(f"Webhook error: {e}")
         return "error", 500
 
-# ---------------- STARTUP (set webhook) ----------------
-def set_webhook():
-    if WEBHOOK_URL:
-        try:
-            bot = Bot(token=TOKEN)
-            url = f"{WEBHOOK_URL.rstrip('/')}/webhook"
-            bot.set_webhook(url=url)
-            print(f"✅ Webhook successfully set to: {url}")
-        except Exception as e:
-            print(f"❌ Failed to set webhook: {e}")
+# ---------------- SET WEBHOOK PROPERLY ----------------
+async def setup_webhook():
+    if not WEBHOOK_URL:
+        print("❌ WEBHOOK_URL missing")
+        return
 
-# Set webhook when app starts
-set_webhook()
+    url = f"{WEBHOOK_URL.rstrip('/')}/webhook"
+    
+    try:
+        # First delete old webhook
+        await application.bot.delete_webhook(drop_pending_updates=True)
+        
+        # Set new webhook
+        await application.bot.set_webhook(url=url)
+        print(f"✅ Webhook successfully set to: {url}")
+    except Exception as e:
+        print(f"❌ Failed to set webhook: {e}")
+
+# Run the async setup
+asyncio.run(setup_webhook())
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=PORT)
