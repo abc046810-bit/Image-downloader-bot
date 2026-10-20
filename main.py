@@ -1,91 +1,166 @@
 import os
+import re
 import logging
+import asyncio
+from io import BytesIO
+from urllib.parse import urlparse
+
 import requests
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import (
+    Application,
+    MessageHandler,
+    ContextTypes,
+    filters,
+)
 
-# ---------------- CONFIG ----------------
 TOKEN = os.environ.get("BOT_TOKEN", "").strip()
-
-if not TOKEN:
-    raise ValueError("BOT_TOKEN environment variable is missing!")
+MAX_SIZE = 10 * 1024 * 1024  # 10 MB
 
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
 )
+
 logger = logging.getLogger(__name__)
 
-print("=" * 50)
-print(f"TOKEN present: True")
-print(f"TOKEN length: {len(TOKEN)}")
-print("Starting bot in POLLING mode...")
-print("=" * 50)
 
-# ---------------- HANDLERS ----------------
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "✅ Bot is working!\n\n"
-        "Ab koi bhi image link bhejo, main download karke bhej dunga.\n\n"
-        "Example:\nhttps://image.tmdb.org/t/p/w342/1nej9lnFyZTlqlaP6XHUEPtVYyX.jpg"
-    )
+def download_image(url):
+    try:
+        parsed = urlparse(url)
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Koi bhi direct image URL bhejo (jpg / png / webp)")
+        if (
+            parsed.scheme not in ("http", "https")
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+        ):
+            return None
 
-async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text:
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "image/*",
+        }
+
+        with requests.get(
+            url,
+            headers=headers,
+            timeout=(10, 30),
+            stream=True,
+            allow_redirects=True,
+        ) as response:
+
+            response.raise_for_status()
+
+            content_type = response.headers.get(
+                "Content-Type", ""
+            ).lower()
+
+            if not content_type.startswith("image/"):
+                return None
+
+            length = response.headers.get("Content-Length")
+
+            if length and int(length) > MAX_SIZE:
+                return None
+
+            data = BytesIO()
+            total = 0
+
+            for chunk in response.iter_content(65536):
+                if not chunk:
+                    continue
+
+                total += len(chunk)
+
+                if total > MAX_SIZE:
+                    return None
+
+                data.write(chunk)
+
+            image_data = data.getvalue()
+
+            if not image_data:
+                return None
+
+            # Telegram photo uploads require a supported image format.
+            if not (
+                image_data.startswith(b"\xff\xd8\xff")
+                or image_data.startswith(b"\x89PNG\r\n\x1a\n")
+                or (
+                    image_data.startswith(b"GIF87a")
+                    or image_data.startswith(b"GIF89a")
+                )
+                or (
+                    len(image_data) >= 12
+                    and image_data[:4] == b"RIFF"
+                    and image_data[8:12] == b"WEBP"
+                )
+            ):
+                return None
+
+            return image_data
+
+    except (requests.RequestException, ValueError, OSError) as error:
+        logger.warning("Image download failed: %s", error)
+        return None
+
+
+async def handle_link(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    message = update.effective_message
+
+    if not message or not message.text:
         return
 
-    text = update.message.text.strip()
+    text = message.text.strip()
 
-    if text.startswith("/"):
+    # Accept a direct URL, including one surrounded by other text.
+    match = re.search(r"https?://[^\s<>]+", text)
+
+    if not match:
         return
 
-    if not text.startswith(("http://", "https://")):
-        await update.message.reply_text("Valid image URL bhejo (http ya https se start hona chahiye)")
-        return
+    url = match.group(0).rstrip(".,!?)']\"")
 
-    # Send "uploading" action
-    await update.message.reply_chat_action("upload_photo")
+    image_data = await asyncio.to_thread(download_image, url)
+
+    # No documents and no text messages for failed downloads.
+    if image_data is None:
+        return
 
     try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
-        response = requests.get(text, headers=headers, timeout=25)
-        response.raise_for_status()
+        await message.reply_photo(
+            photo=BytesIO(image_data),
+            filename="image.jpg",
+        )
+    except Exception as error:
+        logger.warning("Telegram photo upload failed: %s", error)
 
-        content_type = response.headers.get("Content-Type", "").lower()
-        is_image = any(x in content_type for x in ["image/", "jpeg", "png", "webp", "gif"])
-        has_ext = any(text.lower().endswith(ext) for ext in [".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"])
 
-        if not (is_image or has_ext):
-            await update.message.reply_text("Yeh direct image link nahi lag raha.")
-            return
-
-        # Send the image
-        await update.message.reply_photo(
-            photo=response.content,
-            caption="Here's your image ✅"
+def main():
+    if not TOKEN:
+        raise RuntimeError(
+            "BOT_TOKEN environment variable is missing."
         )
 
-    except requests.exceptions.Timeout:
-        await update.message.reply_text("Download timeout ho gaya. Thodi der baad try karo.")
-    except Exception as e:
-        logger.error(f"Error: {e}")
-        await update.message.reply_text("Download fail ho gaya. Link check karo ya dusra link try karo.")
+    app = Application.builder().token(TOKEN).build()
 
-# ---------------- MAIN ----------------
-def main():
-    application = Application.builder().token(TOKEN).build()
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            handle_link,
+        )
+    )
 
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(MessageHandler(filters.TEXT & \~filters.COMMAND, handle_url))
+    logger.info("Image bot started.")
 
-    print("Bot is starting polling...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+    app.run_polling(
+        drop_pending_updates=True,
+    )
+
 
 if __name__ == "__main__":
     main()
