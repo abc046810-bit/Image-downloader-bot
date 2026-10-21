@@ -15,6 +15,12 @@ from telegram.error import BadRequest, TelegramError
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
 from telegram.request import HTTPXRequest
 
+try:
+    # Optional: makes the request look like a real Chrome browser (TLS fingerprint).
+    from curl_cffi import requests as cffi_requests
+except Exception:  # pragma: no cover
+    cffi_requests = None
+
 # Required Render environment variable: BOT_TOKEN
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 PORT = int(os.getenv("PORT", "10000"))
@@ -42,7 +48,7 @@ BROWSER_HEADERS = {
 #   "google" -> looks like a visitor coming from Google
 #   None     -> no Referer at all (some sites block unknown referers)
 REFERER_MODES = ("page", "google", None)
-RETRY_STATUS = {400, 401, 403, 406, 429}
+RETRY_STATUS = {400, 401, 403, 404, 406, 429, 451}
 
 IMAGE_TYPES = {
     "image/jpeg", "image/png", "image/webp", "image/gif",
@@ -271,10 +277,43 @@ def _download_image_once(url: str, referer_mode) -> tuple[bytes, str, str]:
     raise ValueError("Could not find the image after following the page link.")
 
 
+def _download_image_cffi(url: str) -> tuple[bytes, str, str]:
+    """Fallback: Chrome-impersonating request (bypasses TLS-fingerprint blocks)."""
+    if cffi_requests is None:
+        raise RuntimeError("curl_cffi not installed")
+    if not _public_http_url(url):
+        raise ValueError("This link is not a valid public HTTP/HTTPS URL.")
+    p = urlparse(url)
+    referers = (f"{p.scheme}://{p.netloc}/", "https://www.google.com/", None)
+    last_status = None
+    for ref in referers:
+        headers = {
+            "Accept": "image/webp,image/apng,image/*,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        if ref:
+            headers["Referer"] = ref
+        r = cffi_requests.get(
+            url, headers=headers, impersonate="chrome",
+            timeout=30, allow_redirects=True
+        )
+        last_status = r.status_code
+        log.info("curl_cffi attempt (referer=%s) for %s: HTTP %s", ref, url, r.status_code)
+        if r.status_code == 200:
+            if not _public_http_url(str(r.url)):
+                raise ValueError("The link redirected to an unsupported address.")
+            data = r.content
+            if len(data) > MAX_BYTES:
+                raise ValueError("Image is too large (maximum 18 MB).")
+            if _sniff_image_type(data[:16]):
+                return _make_result(data, r.headers.get("content-type", ""), str(r.url))
+    raise requests.RequestException(f"curl_cffi failed, last HTTP status {last_status}")
+
+
 def _download_image(url: str) -> tuple[bytes, str, str]:
     """Return (bytes, content-type, filename); supports direct links and image-host pages.
 
-    Tries multiple Referer strategies when the server blocks us (403 etc.).
+    Tries multiple Referer strategies, then a Chrome-impersonating fallback.
     """
     last_exc = None
     for mode in REFERER_MODES:
@@ -282,10 +321,20 @@ def _download_image(url: str) -> tuple[bytes, str, str]:
             return _download_image_once(url, mode)
         except requests.HTTPError as exc:
             status = exc.response.status_code if exc.response is not None else None
-            log.info("Attempt failed (referer=%s) for %s: HTTP %s", mode, url, status)
+            hdr = exc.response.headers if exc.response is not None else {}
+            log.info(
+                "Attempt failed (referer=%s) for %s: HTTP %s | server=%s cf-ray=%s",
+                mode, url, status, hdr.get("Server"), hdr.get("CF-RAY")
+            )
             last_exc = exc
             if status not in RETRY_STATUS:
                 raise
+
+    # Everything with plain requests failed -> try browser impersonation.
+    try:
+        return _download_image_cffi(url)
+    except Exception as exc:
+        log.info("curl_cffi fallback failed for %s: %s", url, exc)
     raise last_exc
 
 
